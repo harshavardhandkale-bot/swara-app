@@ -58,9 +58,15 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Gemini API setup ──────────────────────────────────────────────────────────
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# Get API key from Streamlit secrets (preferred) or environment
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+
+# Configure Gemini once at startup
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+    except Exception as e:
+        st.warning(f"Failed to configure Gemini API: {e}")
 
 # ── Database setup ────────────────────────────────────────────────────────────
 DB_PATH = "swara_expenses.db"
@@ -123,8 +129,7 @@ def read_bill_with_ai(image_bytes: bytes) -> Optional[BillData]:
         st.error("Gemini API key not set. Please add GEMINI_API_KEY in Streamlit secrets.")
         return None
     try:
-        # Configure with API key
-        genai.configure(api_key=GEMINI_API_KEY)
+        # Use the pre-configured Gemini client
         model = genai.GenerativeModel("gemini-1.5-flash")
         img = Image.open(BytesIO(image_bytes))
         prompt = """You are an expert at reading Indian business bills, receipts, and transport challans.
