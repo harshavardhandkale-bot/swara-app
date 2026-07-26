@@ -189,6 +189,9 @@ def export_to_excel(df: pd.DataFrame) -> bytes:
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         # Prepare export dataframe
         export_df = df.copy()
+        # Convert date column to string to avoid Excel serial number issue
+        if "expense_date" in export_df.columns:
+            export_df["expense_date"] = export_df["expense_date"].astype(str)
         export_df = export_df.rename(columns={
             "expense_date": "Date",
             "particulars": "Particulars",
