@@ -156,17 +156,20 @@ def read_bill_with_ai(image_bytes: bytes) -> Optional[BillData]:
         # Use the pre-configured Gemini client
         model = genai.GenerativeModel("gemini-3.5-flash")
         img = Image.open(BytesIO(image_bytes))
-        prompt = """You are an expert at reading Indian business bills, receipts, and transport challans.
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        current_year = datetime.now().year
+        prompt = f"""You are an expert at reading Indian business bills, receipts, and transport challans.
+Today's date is {today_str}. The current year is {current_year}.
 Extract the following from this bill image and return ONLY valid JSON:
-{
+{{
   "expense_date": "YYYY-MM-DD",
   "vendor_name": "shop or vendor name",
   "particulars": "brief description of purchase",
   "total_amount": 0.00,
   "payment_mode": "Cash or UPI or Card or Unknown",
   "category": "one of: Medicine, Hardware, Transport, Food/Tea, Stationery, Electricity, Rent, Salary, Misc"
-}
-If date is not visible, use today's date. If amount is not clear, use 0. Return ONLY the JSON, no explanation."""
+}}
+IMPORTANT: Always use the current year {current_year} if the bill year is unclear or missing. If date is not visible, use today {today_str}. If amount is not clear, use 0. Return ONLY the JSON, no explanation."""
         response = model.generate_content([prompt, img])
         text = response.text.strip()
         # Clean up markdown code blocks if present
@@ -327,7 +330,7 @@ elif page == "📋 Statement":
     # Filters
     col1, col2, col3 = st.columns(3)
     today = date.today()
-    from_date = col1.date_input("From", value=date(today.year, today.month, 1))
+    from_date = col1.date_input("From", value=date(2020, 1, 1))
     to_date = col2.date_input("To", value=today)
     cat_filter = col3.selectbox("Category", ["All"] + CATEGORIES)
 
