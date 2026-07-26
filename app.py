@@ -130,7 +130,7 @@ def read_bill_with_ai(image_bytes: bytes) -> Optional[BillData]:
         return None
     try:
         # Use the pre-configured Gemini client
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-3.5-flash")
         img = Image.open(BytesIO(image_bytes))
         prompt = """You are an expert at reading Indian business bills, receipts, and transport challans.
 Extract the following from this bill image and return ONLY valid JSON:
