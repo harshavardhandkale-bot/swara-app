@@ -123,6 +123,8 @@ def read_bill_with_ai(image_bytes: bytes) -> Optional[BillData]:
         st.error("Gemini API key not set. Please add GEMINI_API_KEY in Streamlit secrets.")
         return None
     try:
+        # Configure with API key
+        genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel("gemini-1.5-flash")
         img = Image.open(BytesIO(image_bytes))
         prompt = """You are an expert at reading Indian business bills, receipts, and transport challans.
