@@ -243,7 +243,7 @@ page = st.sidebar.radio(
     label_visibility="collapsed"
 )
 st.sidebar.markdown("---")
-st.sidebar.markdown("*Expense Tracker v1.0*")
+st.sidebar.markdown("*Expense Tracker v1.1*")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: ADD EXPENSE
