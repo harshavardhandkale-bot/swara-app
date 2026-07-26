@@ -9,7 +9,7 @@ from PIL import Image
 import google.generativeai as genai
 from pydantic import BaseModel, Field
 from typing import Optional
-import sqlite3
+from supabase import create_client, Client
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -68,51 +68,75 @@ if GEMINI_API_KEY:
     except Exception as e:
         st.warning(f"Failed to configure Gemini API: {e}")
 
-# ── Database setup ────────────────────────────────────────────────────────────
-DB_PATH = "swara_expenses.db"
+# ── Database setup (Supabase PostgreSQL) ──────────────────────────────────────
+SUPABASE_URL = st.secrets.get("SUPABASE_URL") or os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY") or os.environ.get("SUPABASE_KEY", "")
+
+supabase: Client = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        st.error(f"Failed to connect to Supabase: {e}")
+else:
+    st.error("⚠️ Database credentials not configured. Please add SUPABASE_URL and SUPABASE_KEY to Streamlit Secrets.")
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            expense_date TEXT NOT NULL,
-            particulars TEXT NOT NULL,
-            vendor TEXT,
-            category TEXT NOT NULL,
-            amount REAL NOT NULL,
-            payment_mode TEXT DEFAULT 'Cash',
-            entered_by TEXT DEFAULT 'Owner',
-            notes TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        )
-    """)
-    conn.commit()
-    conn.close()
+    """Initialize database table (runs once on Supabase)"""
+    if not supabase:
+        return
+    try:
+        # Check if table exists by trying to select from it
+        supabase.table("expense").select("*").limit(1).execute()
+    except Exception as e:
+        st.error(f"Database table not found. Please create 'expense' table in Supabase: {e}")
 
 def get_all_expenses():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query(
-        "SELECT * FROM expenses ORDER BY expense_date DESC, created_at DESC",
-        conn
-    )
-    conn.close()
-    return df
+    """Fetch all expenses from Supabase"""
+    if not supabase:
+        return pd.DataFrame()
+    try:
+        response = supabase.table("expense").select("*").order("expense_date", desc=True).execute()
+        if response.data:
+            return pd.DataFrame(response.data)
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error fetching expenses: {e}")
+        return pd.DataFrame()
 
 def add_expense(expense_date, particulars, vendor, category, amount, payment_mode, entered_by, notes):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        INSERT INTO expenses (expense_date, particulars, vendor, category, amount, payment_mode, entered_by, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (expense_date, particulars, vendor, category, amount, payment_mode, entered_by, notes))
-    conn.commit()
-    conn.close()
+    """Add expense to Supabase"""
+    if not supabase:
+        st.error("Database not configured.")
+        return False
+    try:
+        supabase.table("expense").insert({
+            "expense_date": expense_date,
+            "particulars": particulars,
+            "vendor": vendor,
+            "category": category,
+            "amount": amount,
+            "payment_mode": payment_mode,
+            "entered_by": entered_by,
+            "notes": notes,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error saving expense: {e}")
+        return False
 
 def delete_expense(expense_id):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
-    conn.commit()
-    conn.close()
+    """Delete expense from Supabase"""
+    if not supabase:
+        st.error("Database not configured.")
+        return False
+    try:
+        supabase.table("expense").delete().eq("id", expense_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error deleting expense: {e}")
+        return False
 
 # ── Pydantic model for OCR output ─────────────────────────────────────────────
 class BillData(BaseModel):
@@ -264,10 +288,10 @@ if page == "➕ Add Expense":
                     entered_by = st.text_input("Entered By", value="Owner")
                     notes = st.text_area("Notes (optional)", height=60)
                     if st.form_submit_button("💾 Save Expense", use_container_width=True):
-                        add_expense(str(exp_date), particulars, vendor, category, amount, payment_mode, entered_by, notes)
-                        del st.session_state["ai_bill"]
-                        st.success(f"✅ Expense of ₹{amount:.0f} saved!")
-                        st.rerun()
+                        if add_expense(str(exp_date), particulars, vendor, category, amount, payment_mode, entered_by, notes):
+                            del st.session_state["ai_bill"]
+                            st.success(f"✅ Expense of ₹{amount:.0f} saved!")
+                            st.rerun()
 
     with tab2:
         with st.form("manual_expense_form"):
@@ -287,9 +311,9 @@ if page == "➕ Add Expense":
                 elif amount <= 0:
                     st.error("Please enter a valid amount.")
                 else:
-                    add_expense(str(exp_date), particulars, vendor, category, amount, payment_mode, entered_by, notes)
-                    st.success(f"✅ Expense of ₹{amount:.0f} saved!")
-                    st.rerun()
+                    if add_expense(str(exp_date), particulars, vendor, category, amount, payment_mode, entered_by, notes):
+                        st.success(f"✅ Expense of ₹{amount:.0f} saved!")
+                        st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: STATEMENT
@@ -312,49 +336,22 @@ elif page == "📋 Statement":
         mask = (df["expense_date"] >= from_date) & (df["expense_date"] <= to_date)
         if cat_filter != "All":
             mask &= df["category"] == cat_filter
-        filtered = df[mask].copy()
-    else:
-        filtered = df.copy()
+        filtered = df[mask]
 
-    # Summary metrics
-    total = filtered["amount"].sum() if not filtered.empty else 0
-    count = len(filtered)
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Total Spend", f"₹ {total:,.0f}")
-    m2.metric("Entries", count)
-    m3.metric("Avg per Entry", f"₹ {total/count:,.0f}" if count > 0 else "₹ 0")
+        st.markdown(f"### Showing {len(filtered)} expenses")
+        st.dataframe(filtered, use_container_width=True, hide_index=True)
 
-    st.markdown("---")
-
-    # Export buttons
-    if not filtered.empty:
-        ec1, ec2 = st.columns([1, 1])
-        with ec1:
-            excel_bytes = export_to_excel(filtered)
+        # Export button
+        if len(filtered) > 0:
+            excel_data = export_to_excel(filtered)
             st.download_button(
                 label="📥 Download Excel",
-                data=excel_bytes,
-                file_name=f"kale-pharma-expenses-{from_date}-to-{to_date}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+                data=excel_data,
+                file_name=f"kale-pharma-statement-{today.strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-
-    # Table
-    if filtered.empty:
-        st.info("No expenses found for the selected period.")
     else:
-        display_df = filtered[["expense_date", "vendor", "particulars", "category", "amount", "payment_mode", "entered_by"]].copy()
-        display_df.columns = ["Date", "Vendor", "Particulars", "Category", "Amount (₹)", "Payment", "By"]
-        display_df["Amount (₹)"] = display_df["Amount (₹)"].apply(lambda x: f"₹ {x:,.0f}")
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-        # Delete option
-        st.markdown("#### Delete an Entry")
-        del_id = st.number_input("Enter ID to delete", min_value=1, step=1, value=1)
-        if st.button("🗑️ Delete Entry", type="secondary"):
-            delete_expense(int(del_id))
-            st.success(f"Entry #{del_id} deleted.")
-            st.rerun()
+        st.info("No expenses recorded yet.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: SUMMARY
@@ -362,57 +359,38 @@ elif page == "📋 Statement":
 elif page == "📊 Summary":
     st.markdown('<p class="company-header">Kale Pharma Pvt Ltd</p>', unsafe_allow_html=True)
     st.markdown('<h1 class="page-title">Summary</h1>', unsafe_allow_html=True)
-    st.caption("Spending totals and category breakdown.")
 
     df = get_all_expenses()
-    today = date.today()
 
-    period = st.radio("Period", ["Today", "This Month", "This Year", "All Time"], horizontal=True)
-    if period == "Today":
-        mask = pd.to_datetime(df["expense_date"]).dt.date == today if not df.empty else pd.Series([], dtype=bool)
-    elif period == "This Month":
-        mask = (pd.to_datetime(df["expense_date"]).dt.year == today.year) & \
-               (pd.to_datetime(df["expense_date"]).dt.month == today.month) if not df.empty else pd.Series([], dtype=bool)
-    elif period == "This Year":
-        mask = pd.to_datetime(df["expense_date"]).dt.year == today.year if not df.empty else pd.Series([], dtype=bool)
-    else:
-        mask = pd.Series([True] * len(df))
+    if not df.empty:
+        df["expense_date"] = pd.to_datetime(df["expense_date"]).dt.date
 
-    filtered = df[mask].copy() if not df.empty and len(mask) > 0 else pd.DataFrame()
+        # Today's summary
+        today = date.today()
+        today_expenses = df[df["expense_date"] == today]
+        today_total = today_expenses["amount"].sum() if not today_expenses.empty else 0
 
-    total = filtered["amount"].sum() if not filtered.empty else 0
-    count = len(filtered)
+        # Month's summary
+        month_start = date(today.year, today.month, 1)
+        month_expenses = df[(df["expense_date"] >= month_start) & (df["expense_date"] <= today)]
+        month_total = month_expenses["amount"].sum() if not month_expenses.empty else 0
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Total Spend", f"₹ {total:,.0f}")
-    m2.metric("Entries", count)
-    m3.metric("Avg per Entry", f"₹ {total/count:,.0f}" if count > 0 else "₹ 0")
-
-    if not filtered.empty:
-        st.markdown("---")
-        col1, col2 = st.columns(2)
-
+        col1, col2, col3 = st.columns(3)
         with col1:
-            st.markdown("#### By Category")
-            cat_summary = filtered.groupby("category")["amount"].sum().reset_index()
-            cat_summary.columns = ["Category", "Amount (₹)"]
-            cat_summary = cat_summary.sort_values("Amount (₹)", ascending=False)
-            cat_summary["Amount (₹)"] = cat_summary["Amount (₹)"].apply(lambda x: f"₹ {x:,.0f}")
-            st.dataframe(cat_summary, use_container_width=True, hide_index=True)
-
+            st.markdown(f'<div class="metric-card"><strong>Today</strong><br>₹{today_total:.2f}</div>', unsafe_allow_html=True)
         with col2:
-            st.markdown("#### By Payment Mode")
-            pay_summary = filtered.groupby("payment_mode")["amount"].sum().reset_index()
-            pay_summary.columns = ["Payment Mode", "Amount (₹)"]
-            pay_summary = pay_summary.sort_values("Amount (₹)", ascending=False)
-            pay_summary["Amount (₹)"] = pay_summary["Amount (₹)"].apply(lambda x: f"₹ {x:,.0f}")
-            st.dataframe(pay_summary, use_container_width=True, hide_index=True)
+            st.markdown(f'<div class="metric-card"><strong>This Month</strong><br>₹{month_total:.2f}</div>', unsafe_allow_html=True)
+        with col3:
+            st.markdown(f'<div class="metric-card"><strong>Total Entries</strong><br>{len(df)}</div>', unsafe_allow_html=True)
 
-        st.markdown("#### Daily Spend")
-        daily = filtered.copy()
-        daily["expense_date"] = pd.to_datetime(daily["expense_date"])
-        daily_sum = daily.groupby("expense_date")["amount"].sum().reset_index()
-        daily_sum.columns = ["Date", "Amount (₹)"]
-        st.bar_chart(daily_sum.set_index("Date"))
+        # Category breakdown
+        st.markdown("### Breakdown by Category")
+        category_summary = df.groupby("category")["amount"].sum().sort_values(ascending=False)
+        st.bar_chart(category_summary)
+
+        # Recent expenses
+        st.markdown("### Recent Expenses")
+        recent = df.head(10)
+        st.dataframe(recent, use_container_width=True, hide_index=True)
     else:
-        st.info("No expenses found for the selected period.")
+        st.info("No expenses recorded yet.")
