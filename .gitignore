@@ -1,0 +1,7 @@
+# Secrets - never commit this
+.streamlit/secrets.toml
+swara_expenses.db
+__pycache__/
+*.pyc
+.env
+*.db
